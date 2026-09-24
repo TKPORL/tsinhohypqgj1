@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ACG黄油资源聚合爬取工具</title>
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@300;400&family=Geist:wght@300;400;500&family=Roboto+Mono:wght@400;500&family=Noto+Serif+SC:wght@300;400&display=swap">
@@ -86,6 +87,13 @@
                         </div>
                         <div class="site-page-row">
                             <label class="checkbox-label"><input type="checkbox" value="2gou" checked> 二狗ACG</label>
+                            <span class="site-page-range">
+                                <input type="number" class="site-start" value="1" min="1" max="999" title="起始页">
+                                <span>至</span>
+                                <input type="number" class="site-end" value="1" min="1" max="999" title="结束页">
+                                <span>页</span>
+                            </span>
+                        </div>
                     </div>
                     <p class="help-text" id="siteHelp">勾选哪个站点就爬哪个，页码只对勾选的站点生效。各站更新速度不同，把更新慢的站点结束页调小，就不会翻到旧内容。</p>
                 </div>
