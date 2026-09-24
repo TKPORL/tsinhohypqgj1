@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- **多站点聚合**：支持4个ACG资源站点爬取
+- **多站点聚合**：支持5个ACG资源站点爬取
 - **实时进度**：爬取过程中前端实时显示日志和进度
 - **卡片预览**：爬取结果以卡片形式展示，含图片、网盘链接、解压码
 - **平台分类**：自动识别PC/PC+安卓平台并分类
@@ -19,6 +19,7 @@
 | 萌幻ACG | bbs4.acgrx.com | Typecho + MiKu | 需要（已配置） |
 | ACG图书馆 | acgll.xyz | WordPress + Zibll | 不需要 |
 | ACG俱乐部 | www.acgjlb.cc | WordPress + Zibll | 不需要 |
+| 鲲Galgame | www.kungal.com | Nuxt3 SSR + JSON API | 下载链接接口需要（已配置） |
 
 ## 快速开始
 
@@ -90,7 +91,8 @@ acg_crawler/
 │   ├── acgyxj.py          # ACG游戏姬爬虫
 │   ├── acgrx.py           # 萌幻ACG爬虫
 │   ├── acgll.py           # ACG图书馆爬虫
-│   └── acgjlb.py          # ACG俱乐部爬虫
+│   ├── acgjlb.py          # ACG俱乐部爬虫
+│   └── kungal.py          # 鲲Galgame爬虫（JSON API，需登录）
 ├── parser/                # 解析模块
 │   ├── __init__.py        # 链接/云盘名提取
 │   └── image_handler.py   # 图片下载处理
@@ -107,9 +109,10 @@ acg_crawler/
 │   └── crawler.db         # SQLite数据库
 ├── images/                # 下载的图片
 │   └── {post_id}/         # 按帖子ID分目录
-└── output/                # 导出目录
-    ├── PC下载/            # PC导出
-    └── PC+安卓下载/       # 双平台导出
+└── output/                # 导出目录（每次导出生成 `<类型>-<时间戳>/` 与同名 .zip，自动只留最近 10 次）
+    ├── PC下载/            # PC导出（含 platform=unknown）
+    ├── PC+安卓下载/       # 双平台导出
+    └── 安卓下载/          # 单安卓导出（v14 起独立，不再并入 PC+安卓）
 ```
 
 ## 使用指南
@@ -135,9 +138,10 @@ acg_crawler/
 ### 3. 导出文件
 
 1. 切换到「导出文件」面板
-2. 选择导出类型：
-   - **PC下载.zip**：仅PC平台资源
-   - **PC+安卓下载.zip**：包含双平台资源
+2. 按类型下载（**三类互不重叠**，某类无数据则不生成该 zip）：
+   - **PC下载.zip**：PC 平台资源（`unknown` 归入此类）
+   - **PC+安卓下载.zip**：双平台资源
+   - **安卓下载.zip**：仅单安卓平台资源（v14 起从 PC+安卓中拆出）
 3. 点击下载按钮，得到zip压缩包
 4. 解压后双击HTML文件即可离线浏览（含图片）
 
@@ -194,6 +198,20 @@ crawler:
 ```
 
 ## 更新日志
+
+### 2026-09-24 (文档) 文档纠错：导出说明补齐三份 + 萌幻域名统一
+- **导出说明补齐**：v14 把导出拆成三份，但 README 的「使用指南 → 导出文件」与「项目结构 → output/」一直只写两份，本次补齐第三份「安卓下载」（并注明三类互不重叠、`unknown` 归 PC、时间戳命名、自动只留最近 10 次）
+- **萌幻ACG 域名统一**：全项目 8 处 `bbs.acgrx.com` 改为 `bbs4.acgrx.com`（跨 README / 【项目全解】/【技术方案】/【项目架构】/【需求分析】/【git初始化】/ 需求文档）
+  - 依据：代码自 `2416a66` 起一直用 `bbs4.acgrx.com`（`crawler/acgrx.py` + `config.yaml`）；`bbs.acgrx.com` 是 v0 早期错误假设，此前被文档误记为"主站"
+- **顺带补记（同日早些时候）**：目标站点表补齐第 5 站**鲲Galgame**（kungal.com），特性描述 4 → 5 个站点，结构树 `crawler/` 补 `kungal.py`
+
+### 2026-09-24 (备份) 代码与数据同步到备份仓库 TKPORL/-
+- **归档 v14–v16 改动**：此前一批改动一直停留在工作区未提交，本次一次性提交到本地 master（`a4b1823`）。**未推送到原仓库 `Tsinhohypqgj`**，原仓库远端仍是 `5d59fbd`
+- **新增备份仓库**：`git@github.com:TKPORL/-.git`，项目整体落在 **`2026-09-24/`**（日期命名）目录下，推送 commit `72a401f`
+  - 做法：`git subtree add --prefix=2026-09-24 <本地仓库> master` —— **完整提交历史一并保留**（可回溯到 v0）
+- **纳入备份**：全部源码 + 根目录 12 份 `.md` 文档 + `docs/`（含风格存档）+ `crawler/kungal.py` + `tools/` 5 个维护脚本 + 5 个回归测试 + `data/crawler.db`（11.9MB / 974 条）
+- **排除**：`.env`（凭据）、`images/`（1.56GB）、`output/`（4.7GB）、`data/*.bak` 与 `data/backups/`、`logs/`、`__pycache__/`、`nul`（Windows 保留名，两处）、乱码名 `硬编码回退` / `纭紪鐮佸洖閫€`、一次性调试脚本与截图（`_dbg*` `_probe*` `_patch*` `_ui*.png` `_ex*.png` 等）、`.workbuddy/` `.freebuff/` `.ohmyagent/` `.monkeycode/`
+- ⚠️ **注意（长期）**：`data/crawler.db` 已纳入版本控制（`.gitignore` 的 `acg_crawler/data/*.db` 被 `git add -f` 强制加入），今后每次数据库变动都会新增一份完整快照，仓库会持续变大 —— 建议只在需要备份节点时才提交数据库
 
 ### 2026-09-23 (v16) 修复：四站误加备注块 + 多图被挤压成一张
 - **问题1（备注块）**：v11 加「备注折叠」时条件只写了 `if note_text`，**没加站点判断**，导致四个老站（`content` 装的是游戏简介）也显示备注块。用户明确：四站是管理员整理站，本来就没有备注；只有鲲Galgame（用户发帖型）才有发布者备注

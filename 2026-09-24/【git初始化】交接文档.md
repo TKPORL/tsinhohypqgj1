@@ -15,10 +15,9 @@
 
 ### 目标网站
 1. ACG游戏姬 (www.acgyxjvip.com)
-2. 萌幻ACG主站 (bbs.acgrx.com)
-3. 萌幻ACG备用 (bbs4.acgrx.com)
-4. ACG图书馆 (acgll.xyz)
-5. IACG.RIP社区 (community.acg-c.net)
+2. 萌幻ACG (bbs4.acgrx.com)
+3. ACG图书馆 (acgll.xyz)
+4. IACG.RIP社区 (community.acg-c.net)
 
 ## 二、关键规格与结论
 
