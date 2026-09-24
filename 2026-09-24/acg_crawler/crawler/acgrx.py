@@ -2,6 +2,7 @@
 import json
 import re
 from pathlib import Path
+from urllib.parse import urljoin
 from crawler.base import BaseCrawler
 from parser import extract_links_multi, extract_links, extract_cloud_name, extract_cheat_code, fix_title_tags, fix_title_slash, fix_title_brackets, fix_title_cloud_name
 from parser.image_handler import download_images
@@ -16,6 +17,17 @@ class ACGRXCrawler(BaseCrawler):
         self.logged_in = False
         self._login()
 
+    def _soup(self, url):
+        """带登录态自愈的页面获取：详情页被踢回登录页时自动重登一次再取"""
+        soup = super()._soup(url)
+        if "login.php" not in url and soup.select_one("form[name='login']") is not None:
+            print(f"[{self.site_name}] 检测到登录页，cookie 可能失效，尝试重新登录")
+            self.logged_in = False
+            self._login()
+            if self.logged_in:
+                soup = super()._soup(url)
+        return soup
+
     def _login(self):
         """自动登录"""
         try:
@@ -28,11 +40,13 @@ class ACGRXCrawler(BaseCrawler):
                 print(f"[{self.site_name}] 未找到登录表单")
                 return
 
-            # 获取action URL（含CSRF token）
+            # 获取action URL（含CSRF token）；相对路径转绝对，避免 POST 打到错误地址
             action = form.get("action", "")
             if not action:
                 print(f"[{self.site_name}] 未找到登录action")
                 return
+            if not action.startswith("http"):
+                action = urljoin(f"{self.base_url}/adminacgrx/login.php", action)
 
             email = self.config.get("acgrx", {}).get("email", "")
             password = self.config.get("acgrx", {}).get("password", "")
@@ -172,7 +186,7 @@ class ACGRXCrawler(BaseCrawler):
 
         # 提取网盘链接
         links = extract_links_multi(content)
-        if not links.get("baidu_link") and not links.get("mobile_link"):
+        if not links.get("baidu_link"):  # 移动云盘已下线，只认百度
             full_text = str(soup)
             links = extract_links_multi(full_text)
 

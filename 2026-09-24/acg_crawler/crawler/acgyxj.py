@@ -166,7 +166,7 @@ class ACGYXJCrawler(BaseCrawler):
             post_date = date_el.get("datetime", "")[:10]
 
         links = extract_links_multi(content)
-        if not links.get("baidu_link") and not links.get("mobile_link"):
+        if not links.get("baidu_link"):  # 移动云盘已下线，只认百度
             full_text = str(soup)
             links = extract_links_multi(full_text)
 

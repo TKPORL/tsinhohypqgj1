@@ -92,10 +92,10 @@ try:
 except ValueError:
     check("空字典抛错", "raise", "raise")
 
-print("---- 8. index.html 里 #targetSites 内恰好 4 个站点勾选框 ----")
+print("---- 8. index.html 里 #targetSites 内恰好 5 个站点勾选框（v9 起含鲲Galgame）----")
 html = open("templates/index.html", encoding="utf-8").read()
 block = html.split('id="targetSites"')[1].split("</div>\n                </div>")[0]
-check("站点勾选框数量", block.count('type="checkbox"'), 4)
+check("站点勾选框数量", block.count('type="checkbox"'), 5)
 check("已移除死控件 pageSite", 'id="pageSite"' in html, False)
 check("已移除旧 pageGroup", 'id="pageGroup"' in html, False)
 

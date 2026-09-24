@@ -9,6 +9,7 @@ from crawler.acgrx import ACGRXCrawler
 from crawler.acgll import ACGLLCrawler
 from crawler.acgjlb import ACGJLBCrawler
 from crawler.kungal import KungalCrawler
+from crawler.ergouacg import ErGouACGCrawler
 from database import insert_post, create_task, update_task, delete_task, delete_posts_by_task, get_conn
 from config import get_speed_profile, get_site_detail_workers
 
@@ -18,6 +19,7 @@ CRAWLERS = {
     "acgll": ACGLLCrawler,
     "acgjlb": ACGJLBCrawler,
     "kungal": KungalCrawler,
+    "2gou": ErGouACGCrawler,
 }
 
 # 站点键 -> 中文名（面板显示用，不依赖爬虫实例）
@@ -27,6 +29,7 @@ SITE_NAMES = {
     "acgll": "ACG图书馆",
     "acgjlb": "ACG俱乐部",
     "kungal": "鲲Galgame",
+    "2gou": "二狗ACG",
 }
 
 
@@ -117,18 +120,17 @@ class CrawlerEngine:
             if post.get("platform") == "unknown":
                 return "skipped"
             has_baidu = bool(post.get("baidu_link"))
-            has_mobile = bool(post.get("mobile_link"))
-            # 兼容 v4 多链接：download_items_json 含 baidu/mobile provider 时也算有链接
-            if not (has_baidu or has_mobile):
+            # 移动云盘 2026-09-24 起下线，只认百度（兼容 v4 多链接：items 含 baidu 也算）
+            if not has_baidu:
                 items_str = post.get("download_items_json")
                 if items_str:
                     try:
                         items = json.loads(items_str) if isinstance(items_str, str) else items_str
-                        if any(it.get("provider") in ("baidu", "mobile") for it in items):
+                        if any(it.get("provider") == "baidu" for it in items):
                             has_baidu = True
                     except Exception:
                         pass
-            if not (has_baidu or has_mobile):
+            if not has_baidu:
                 return "skipped"
             post["crawl_id"] = task_id
             insert_post(post)

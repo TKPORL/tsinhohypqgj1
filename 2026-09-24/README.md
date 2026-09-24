@@ -20,6 +20,7 @@
 | ACG图书馆 | acgll.xyz | WordPress + Zibll | 不需要 |
 | ACG俱乐部 | www.acgjlb.cc | WordPress + Zibll | 不需要 |
 | 鲲Galgame | www.kungal.com | Nuxt3 SSR + JSON API | 下载链接接口需要（已配置） |
+| 二狗ACG | 2gouacg.com | WordPress + TouchGal 风格主题 | 不需要 |
 
 ## 快速开始
 
@@ -198,6 +199,50 @@ crawler:
 ```
 
 ## 更新日志
+
+### 2026-09-24 (v21) 二狗剔除「盖世模拟器」按钮链接
+- 站方每帖挂「盖世模拟器 / 百度网盘 / UC网盘」三个按钮，前两个都是百度链；模拟器那条不是资源本体（用户截图反馈：救生员狂热帖出两个百度按钮）
+- `parse_detail` 剔除锚文本含「模拟器」且指向百度网盘的 `<a>`；删 20 条重爬第 1 页验证：17840 只剩真资源 `?pwd=8u2y`，残留 0，20/20 成功
+
+### 2026-09-24 (v20) 二狗解压码改带前缀格式 + 正文提取兜底
+- 解压码字段：`twodog`（纯码）→ `解压码:twodog`（与鲲一致，前端直接复制不加前缀）
+- 不再写死：先从正文提取（正则同萌幻口径 `解压密码/解压码/密码`），提不到才回落全站默认 `twodog`（防发布者以后改码）
+- 验证：临时实例（5099 端口）真量爬 1 页 = 20 帖，19 成功 1 失败；解压码/标题改写/平台/提取码/日期全对；导出 HTML 视觉核对正常
+
+### 2026-09-24 (v19) 新增第 6 站：二狗ACG（2gouacg.com，四站 HTML 方案）
+- 新爬虫 `crawler/ergouacg.py`（注册键 `2gou`，中文名「二狗ACG」），WordPress 明文链接，**不套鲲的 API 方案**
+- 列表 `/?cat=3&paged=N`（第 1 页不带 paged），详情 `/?p=ID`；标题取 `<title>` 标签（H1 是 JS 占位"加载中"）
+- 正文容器 `div.single-content`：全部图片（演示视频 `<video>` 天然忽略）+ 下载按钮区；只采百度，UC 按惯例不采集；百度提取码在链接 `?pwd=` 参数
+- 解压密码全站固定 `twodog`
+- **标题改写**（用户 2026-09-24 定稿两条标准样例为单测）：`【标签】名字 PC+安卓双端官方中文版 百度+UC/758M` → `【标签/官方中文版】名字 【PC+安卓 758M】`——"更新"前缀保留、描述词（官方中文版等）挪进开头标签、名字里 `/` 分隔换空格、平台词边界匹配（防误吃名字里的 PC）、网盘+体积收进尾括号
+- 该站封旧版 Chrome UA（Chrome/120 实测 403），已覆盖为 Chrome/126
+- 前端注册：`templates/index.html` 站点勾选框 + 来源筛选下拉、`static/app.js` SITE_NAMES
+- 验证：标题改写 5 用例单测全过（含两条标准样例逐字比对）；离线列表解析 20 条/页、总页数 95；真实帖子冒烟 2 篇（`?p=17969` PC+安卓 2.48G、`?p=17962` 纯PC 219M）标题/平台/链接/提取码/日期全部正确
+- 玖黎ACG（jiuliacg.com）：用户 2026-09-24 拍板**放弃接入**（下载链接回复可见，无法绕过；调研记录保留在【新站调研】文档）
+
+### 2026-09-24 (v18) 鲲Galgame 适配站点重构（新 Go API /api/v1）+ 平台判定按百度区实际资源
+- 站点已重构（kun-galgame-nuxt4，Go Fiber API），旧 `/api/galgame` 全部弃用（404"页面版本已过期"），爬虫全面迁移到 `/api/v1`
+- 列表：`/api/v1/works?include_nsfw=true&page&limit`（默认排除 NSFW，必须带此参数；默认只列有资源的作品）
+- 详情：`/api/v1/works/{id}`（display_name/aliases/intros/covers），资源：`/works/{id}/resources`（state=valid/expired、resource_platforms=win/and、content 为 slate 富文本）
+- 下载链接改由 `POST /api/v1/galgame-resources/{rid}/downloads` 发放（download_urls/extraction_code/archive_password，匿名可用，cookie 不再是硬依赖）
+- 页面 URL 仍为 `/galgame/{id}` 且 id 与旧 gid 对应，增量去重不受影响
+- 备注（富文本→纯文本）沿用引流清洗 + 审计日志；仍只取百度网盘资源
+- **平台判定**（用户 2026-09-24 确认）：由百度区全部有效资源平台的并集决定——全 PC / 全安卓 → 各选最新 1 条；凑齐 PC+安卓（单条双平台或多条各占一端）→ 划「PC+安卓」，PC/安卓各出 1 条下载链接。之前只看最新 1 条，分条资源会误判
+- **发布者备注优先于平台标签**：备注写明"PC+安卓"（如"PC+安卓直装"）而资源标签只标一端的，按备注归「PC+安卓」
+- 凑出的 PC+安卓两条资源 → 备注合并为一个【发布者备注】块（`PC：… / 安卓：…`）；解压密码不同时标注「解压码PC xxx ｜ 解压码安卓 xxx」
+
+### 2026-09-24 (v17) 修复 4 项 bug + 移动云盘全面下线
+- **修复**：纯安卓帖误显示"PC+安卓"双标签（`static/app.js` platformTags.android 原写成双标签）
+- **修复**：卡片标题未转义直接进 innerHTML（前端 `escapeHtml()` + 导出侧 `html_lib.escape`，含 `<` 的标题不再破版）
+- **修复**：自动备份改用 SQLite backup API（原来 shutil 直接拷运行中的 WAL 库，可能丢最近写入）
+- **修复**：萌幻登录表单 action 相对路径转绝对 URL（urljoin）+ 详情页被踢回登录页时自动重登一次
+- **移动云盘下线**：下载链接只获取百度网盘。解析器不再采集 139 链接（mobile_* 字段保留恒为 None）、鲲接口 `include_providers` 只拉 baidu、**五站"无有效链接→跳过"判断全部只认百度**、前端与导出 HTML 不再渲染移动云盘按钮/双网盘标签；数据库字段与历史数据不动，仅新增数据生效
+- 顺带修正过期测试：`_test_site_pages.py` 站点勾选框 4→5（v9 加鲲后漏改）
+
+### 2026-09-24 (推送) 备份仓库改名并同步最新改动
+- **备份仓库 `TKPORL/-` 已在 GitHub 改名为 `TKPORL/tsinhohypqgj1`**（内容同一个，本地 remote `tsinho1` 已指向新址）
+- 当日文档纠错（8 文件）提交为本地 master `0ed87ae`，并以 subtree merge 并入备份仓库 `2026-09-24/` 目录：main `72a401f` → `b287392`，完整提交历史保留
+- 主仓库 `origin`（Tsinhohypqgj）本地仍领先 2 个提交未推送
 
 ### 2026-09-24 (文档) 文档纠错：导出说明补齐三份 + 萌幻域名统一
 - **导出说明补齐**：v14 把导出拆成三份，但 README 的「使用指南 → 导出文件」与「项目结构 → output/」一直只写两份，本次补齐第三份「安卓下载」（并注明三类互不重叠、`unknown` 归 PC、时间戳命名、自动只留最近 10 次）

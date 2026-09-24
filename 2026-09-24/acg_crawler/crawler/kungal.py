@@ -1,19 +1,22 @@
 """鲲Galgame（kungal.com）爬虫
 
-四个接口（前三个公开，第四个需登录 cookie）：
+★ 2026-09-24 站点重构为 Go API（kun-galgame-nuxt4），前缀改为 /api/v1，旧 /api/galgame 路由已弃用
+  （请求会 404 + "页面版本已过期"）。新接口（鉴权仍是 kungal_session cookie，匿名单独可用）：
 
-1. 列表      GET /api/galgame?include_providers=baidu,caiyun&page=N&limit=20
-   - 参数必须 snake_case；驼峰 includeProviders 会被 API 静默忽略（不过滤）
-2. 游戏详情  GET /api/galgame/{gid}
-   - name / name_original / alias[] / effective_banner_url / intro_text / view / like_count
-3. 资源列表  GET /api/galgame/{gid}/resource/all?galgame_id={gid}
-   - 每条资源：provider_names[] / platform / platforms[] / size / status(0有效 1失效) / note / created / user
-4. 资源下载  GET /api/galgame-resource/{rid}/detail?galgame_resource_id={rid}   ← 需登录
-   - link[]（真实下载链接）/ code（提取码）/ password（解压密码）/ note
+1. 列表      GET /api/v1/works?page=N&limit=20&include_nsfw=true
+   - 默认排序 resource_updated_desc；默认排除 NSFW，必须带 include_nsfw=true
+   - 默认只列"至少有一条资源"的 work
+2. 作品详情  GET /api/v1/works/{gid}?include_nsfw=true
+   - display_name / aliases[] / intros[{locale,value}] / covers / like_count / view_count
+3. 资源列表  GET /api/v1/works/{gid}/resources?page=1&limit=50   （valid 优先、newest 次之）
+   - 每条：provider_names[]（由链接域名推导，如"百度网盘"）/ resource_platforms[]（win/and/...）
+     / size / state(valid|expired) / content(slate 文档=发布者备注) / created_at
+4. 下载发放  POST /api/v1/galgame-resources/{rid}/downloads   ← 匿名可调（每次计数一次下载）
+   - download_urls[]（真实下载链接）/ extraction_code（提取码）/ archive_password（解压密码）
 
 挑选规则（用户确认）：
-- 只保留 百度网盘 / 和彩云(移动云盘) 两类，每类只取一条：在"有效(status==0)"里按 created 取最新
-- 两类都没有 → 整个游戏跳过
+- 只保留 百度网盘 一类（移动云盘 2026-09-24 起不再采集），只取一条：在"有效(state==valid)"里按 created_at 取最新
+- 没有百度资源 → 整个游戏跳过
 - 解压密码单独进 unzip_code 字段，备注里对应那行自动去掉并重排序号（避免重复与空位）
 """
 import json
@@ -207,6 +210,22 @@ def _strip_html(text):
     return text
 
 
+def _doc_to_text(node):
+    """把新 API 的 slate 富文本文档（{object: document/paragraph/text, children: [...]}）转成纯文本"""
+    if isinstance(node, str):
+        return node
+    if not isinstance(node, dict):
+        return ""
+    if node.get("object") == "text":
+        return node.get("value") or ""
+    parts = []
+    for child in node.get("children") or []:
+        parts.append(_doc_to_text(child))
+    if node.get("object") == "paragraph":
+        return "\n".join(p for p in "\n".join(parts).split("\n") if p) if parts else ""
+    return "".join(parts)
+
+
 def _collapse_numbered_groups(lines, keep):
     """编号列表整组处理
 
@@ -238,14 +257,30 @@ def _collapse_numbered_groups(lines, keep):
         i = j
 
 
+_KANA_RE = re.compile(r"[\u3040-\u30ff\u31f0-\u31ff]")
+_HAN_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _alias_values(galgame):
+    """取别名列表（兼容新 API [{value}] 与测试用旧字段 [str]）"""
+    raw = galgame.get("aliases") or []
+    if raw and isinstance(raw[0], dict):
+        raw = [a.get("value") or a.get("name") or "" for a in raw]
+    return [(a or "").strip() for a in raw]
+
+
 class CookieExpiredError(RuntimeError):
     """kungal 登录 cookie 失效"""
 
 
 class KungalCrawler(BaseCrawler):
-    """鲲Galgame爬虫（JSON API，资源下载链接需登录 cookie）"""
+    """鲲Galgame爬虫（/api/v1 JSON API，下载发放匿名可用，cookie 仅作身份补充）"""
 
     PAGE_LIMIT = 20
+    # 资源列表单页上限（API 默认 50，超出会 LIMIT_TOO_LARGE）
+    RESOURCE_PAGE_LIMIT = 50
+    # 单个作品最多拉几页资源（一个作品几十条资源已到顶）
+    RESOURCE_MAX_PAGES = 5
 
     def __init__(self, config):
         super().__init__(config)
@@ -253,20 +288,15 @@ class KungalCrawler(BaseCrawler):
         self.base_url = "https://www.kungal.com"
         self._total_pages = None
         # 登录 cookie：config.py 已把 .env 注入 os.environ
+        # 新 API 下载发放匿名可用，cookie 只用于后续可能的登录态接口，失效不影响爬取
         cookie = os.environ.get("KUNGAL_COOKIE", "").strip()
         if cookie:
             self.session.headers["Cookie"] = cookie
-        else:
-            print("[鲲Galgame] 未配置 KUNGAL_COOKIE（.env），下载链接会取不到")
 
     # ---------- 基础请求 ----------
 
-    def _api(self, path, need_login=False):
-        """请求 JSON 接口并校验业务码
-
-        自己发请求而不用 BaseCrawler._request：后者带"验证页检测"（响应体 <200 字符
-        视为被拦截），而本站在列表末页会返回极短的空 JSON，会被误判成拦截页。
-        """
+    def _api(self, path, method="GET", payload=None):
+        """请求 /api/v1 JSON 接口（新 Go API：业务错误走 HTTP 状态码，body 是 RFC problem 或 {code,message}）"""
         url = self.base_url + path
         timeout = self.config.get("crawler", {}).get("timeout", 15)
         last_err = None
@@ -274,14 +304,16 @@ class KungalCrawler(BaseCrawler):
             self._check_pause()
             try:
                 self._delay()
-                resp = self.session.get(url, timeout=timeout)
+                if method == "POST":
+                    resp = self.session.post(url, json=payload or {}, timeout=timeout)
+                else:
+                    resp = self.session.get(url, timeout=timeout)
                 if resp.status_code == 401:
                     raise CookieExpiredError(
                         "kungal 登录 cookie 已失效，请重新登录后更新 .env 里的 KUNGAL_COOKIE")
                 resp.raise_for_status()
                 self._reset_failures()
-                data = resp.json()
-                break
+                return resp.json()
             except CookieExpiredError:
                 raise
             except Exception as e:
@@ -292,35 +324,41 @@ class KungalCrawler(BaseCrawler):
                     old = self.session.proxies.copy()
                     try:
                         self.session.proxies = {}
-                        resp = self.session.get(url, timeout=timeout)
+                        if method == "POST":
+                            resp = self.session.post(url, json=payload or {}, timeout=timeout)
+                        else:
+                            resp = self.session.get(url, timeout=timeout)
                         resp.raise_for_status()
-                        data = resp.json()
+                        result = resp.json()
                         self.session.proxies = old
-                        break
+                        return result
                     except Exception:
                         self.session.proxies = old
                 if attempt == 2:
                     raise RuntimeError(f"接口请求失败: {path} ({last_err})")
                 time.sleep(self.config.get("crawler", {}).get("retry_delay", 2) * (attempt + 1))
 
-        if data.get("code") != 0:
-            msg = data.get("message") or ""
-            if data.get("code") == 205 or "登录" in msg:
-                raise CookieExpiredError(
-                    "kungal 登录 cookie 已失效，请重新登录后更新 .env 里的 KUNGAL_COOKIE")
-            raise RuntimeError(f"接口返回异常: {path} -> {msg}")
-        return data.get("data")
+    def _error_message(self, resp):
+        """从错误响应里尽量抠出人话（problem JSON 的 detail/message/title 都试一遍）"""
+        try:
+            d = resp.json()
+        except Exception:
+            return f"HTTP {resp.status_code}"
+        for key in ("message", "detail", "title"):
+            if d.get(key):
+                return f"HTTP {resp.status_code} {d[key]}"
+        return f"HTTP {resp.status_code}"
 
     # ---------- 列表 ----------
 
     def _fetch_list(self, page_num):
-        return self._api(f"/api/galgame?include_providers=baidu,caiyun"
+        return self._api(f"/api/v1/works?include_nsfw=true"
                          f"&page={page_num}&limit={self.PAGE_LIMIT}")
 
     def get_list_page(self, page_num):
         data = self._fetch_list(page_num) or {}
         return [{"url": f"{self.base_url}/galgame/{g['id']}", "category": ""}
-                for g in (data.get("galgames") or [])]
+                for g in (data.get("items") or [])]
 
     def get_total_pages(self):
         if self._total_pages is None:
@@ -333,59 +371,109 @@ class KungalCrawler(BaseCrawler):
 
     @staticmethod
     def _bucket(provider_names):
-        """资源归属：baidu / mobile / None（其他网盘一律忽略）"""
+        """资源归属：baidu / None（移动云盘等其余网盘一律忽略，2026-09-24 起只收百度）"""
         names = provider_names or []
         if any(any(h in n for h in _BAIDU_HINTS) for n in names):
             return "baidu"
-        if any(any(h in n for h in _MOBILE_HINTS) for n in names):
-            return "mobile"
         return None
 
     @staticmethod
     def _created_key(resource):
-        return resource.get("created") or ""
+        return resource.get("created_at") or ""
 
     def _pick_newest_valid(self, resources):
-        """每个网盘取"有效资源里发布时间最新"的一条"""
-        picked = {}
-        for r in resources:
-            if r.get("status") != 0:          # status 1 = 已失效，跳过
-                continue
-            bucket = self._bucket(r.get("provider_names"))
-            if not bucket:
-                continue
-            old = picked.get(bucket)
-            if old is None or self._created_key(r) > self._created_key(old):
-                picked[bucket] = r
-        return picked
+        """按百度区全部有效资源判定平台并挑选下载链接（用户 2026-09-24 确认）：
+
+        平台 = 百度区全部有效资源平台的并集：
+        - 全是 PC → 选最新 1 条，平台 pc
+        - 全是安卓 → 选最新 1 条，平台 android
+        - 同时含 PC 与安卓（单条双平台或多条各占一端）→ PC/安卓各选最新 1 条
+          （同一条双平台只留一条），平台 pc_android
+        返回 (选中的资源列表, 平台并集 set)；无百度有效资源返回 ([], set())
+        """
+        valid = [r for r in resources
+                 if r.get("state") == "valid"      # expired = 已失效，跳过
+                 and self._bucket(r.get("provider_names")) == "baidu"]
+        union = set()
+        for r in valid:
+            union |= self._platform_set(r)
+        if not valid or not union:
+            return [], set()
+
+        def newest(subset):
+            return max(subset, key=self._created_key)
+
+        def note_boost(subset, u):
+            """发布者备注优先于平台标签（用户 2026-09-24：备注写明"PC+安卓"的按备注归 PC+安卓）"""
+            for r in subset:
+                if re.search(r"PC\s*[＋+]\s*安卓", _doc_to_text(r.get("content") or {}), re.I):
+                    return {"pc", "android"}
+            return u
+
+        if union in ({"pc"}, {"android"}):
+            best = newest(valid)
+            return [best], note_boost([best], union)
+        # pc+android：两端各选最新一条；同一条双平台只留一条
+        selected = []
+        for plat in ("pc", "android"):
+            best = newest([r for r in valid if plat in self._platform_set(r)])
+            if best is not None and not any(best is s for s in selected):
+                selected.append(best)
+        # PC 资源备注写明"PC+安卓"（如"PC+安卓直装"）→ 该条已覆盖两端，不再另选安卓包，
+        # 否则 PC 链接本身就直装安卓、再配一条安卓包 = 双安卓（用户 2026-09-24）
+        if len(selected) > 1:
+            pc_res = next((r for r in selected if self._platform_set(r) == {"pc"}), None)
+            if pc_res and re.search(r"PC\s*[＋+]\s*安卓",
+                                    _doc_to_text(pc_res.get("content") or {}), re.I):
+                selected = [pc_res]
+        return selected, note_boost(selected, union)
+
+    def _fetch_all_resources(self, gid):
+        """拉取作品全部资源（新 API 是分页集合，默认 valid 优先、newest 次之）"""
+        out = []
+        total = None
+        for page in range(1, self.RESOURCE_MAX_PAGES + 1):
+            data = self._api(f"/api/v1/works/{gid}/resources?page={page}"
+                             f"&limit={self.RESOURCE_PAGE_LIMIT}") or {}
+            items = data.get("items") or []
+            out.extend(items)
+            total = int(data.get("total") or 0)
+            if len(out) >= total or not items:
+                break
+        return out
 
     # ---------- 平台 ----------
 
     @staticmethod
+    def _display_name(galgame):
+        """标题名（用户 2026-09-24）：display_name 常是日文原名，
+        别名里有中文名（含汉字、无假名）时优先当中文名用。
+        返回 (标题名, 原名)；原名非空时进别名行。"""
+        name = ((galgame.get("display_name") or galgame.get("name") or "")).strip()
+        for a in _alias_values(galgame):
+            if a and a != name and _HAN_RE.search(a) and not _KANA_RE.search(a):
+                return a, name
+        return name, ""
+
+    @staticmethod
     def _platform_set(resource):
-        """把单条资源的平台标签转成 {pc|android} 集合"""
-        codes = set(resource.get("platforms") or [])
-        label = resource.get("platform") or ""
+        """把单条资源的平台标签转成 {pc|android} 集合（新 API：resource_platforms，win/and/ios/swi/dvd）"""
+        codes = set(resource.get("resource_platforms") or resource.get("platforms") or [])
         result = set()
-        if "win" in codes or label in ("windows", "mac", "linux"):
+        if "win" in codes:
             result.add("pc")
-        if "and" in codes or label in ("app", "android"):
+        if "and" in codes:
             result.add("android")
-        if label == "emulator":          # 模拟器版本 PC / 安卓模拟器都能跑
-            result.update({"pc", "android"})
         return result
 
-    @classmethod
-    def _platform_info(cls, resources):
-        """合并多条资源的平台 → (本工具平台值, 中文标签)"""
-        merged = set()
-        for r in resources:
-            merged |= cls._platform_set(r)
-        if merged == {"android"}:
+    @staticmethod
+    def _platform_label(union):
+        """百度区平台并集 → (本工具平台值, 中文标签)"""
+        if union == {"android"}:
             return "android", "安卓"
-        if merged == {"pc"}:
+        if union == {"pc"}:
             return "pc", "PC"
-        if merged:
+        if union:
             return "pc_android", "PC+安卓"
         return "pc", "PC"   # 拿不到平台标签时按 PC 兜底，避免整条丢失
 
@@ -417,6 +505,12 @@ class KungalCrawler(BaseCrawler):
             if _PASSWORD_LINE.search(s):
                 keep.append(False)
                 tags.append("解压密码行")
+                continue
+            # 链接残头：slate 链接节点只留文字不留 URL，行尾只剩"xxx链接："标签的整行丢弃
+            # （用户 2026-09-24：避免用户误以为有工具链接却没发出来）
+            if re.search(r"链接\s*[：:]\s*$", s):
+                keep.append(False)
+                tags.append("链接残头")
                 continue
             rule = _promo_rule(s)
             keep.append(rule is None)
@@ -464,22 +558,31 @@ class KungalCrawler(BaseCrawler):
 
     @staticmethod
     def _build_unzip_code(details):
-        """把各网盘的解压密码标注上网盘名，方便分辨（百度在前）
+        """解压密码文本（前端直接复制这段，不再加前缀，用户 2026-09-24）
 
-        - 两个网盘密码相同 → "百度网盘/移动云盘 CC"
-        - 不同 → "百度网盘 open ｜ 移动云盘 afggacg"
-        - 只有一个 → "百度网盘 open"
+        details 元素为 (资源, 下载详情)：
+        - 只有一条密码（或全部相同）→ "解压码:open"
+        - 多条密码不同（凑出的 PC+安卓两条链接）→ "PC解压码:open ｜ 安卓解压码:afggacg"
         """
-        pairs = []
-        for bucket, label in (("baidu", "百度网盘"), ("mobile", "移动云盘")):
-            pw = ((details.get(bucket) or {}).get("password") or "").strip()
-            if pw:
-                pairs.append((label, pw))
-        if not pairs:
+        entries = []
+        for res, detail in details:
+            pw = (detail.get("password") or "").strip()
+            if not pw or any(p == pw for _, p in entries):
+                continue
+            entries.append((KungalCrawler._platform_set(res) if res else set(), pw))
+        if not entries:
             return None
-        if len(pairs) > 1 and len({pw for _, pw in pairs}) == 1:
-            return f"{'/'.join(label for label, _ in pairs)} {pairs[0][1]}"
-        return " ｜ ".join(f"{label} {pw}" for label, pw in pairs)
+        if len(entries) == 1:
+            return f"解压码:{entries[0][1]}"
+        labels = []
+        for plats, pw in entries:
+            if plats == {"pc"}:
+                labels.append(f"PC解压码:{pw}")
+            elif plats == {"android"}:
+                labels.append(f"安卓解压码:{pw}")
+            else:
+                labels.append(f"解压码:{pw}")
+        return " ｜ ".join(labels)
 
     def _build_content(self, galgame, notes, sizes):
         """正文 = 各网盘大小 + 别名 + 发布者备注 + 简介
@@ -487,55 +590,81 @@ class KungalCrawler(BaseCrawler):
         大小放最前：别名往往很长，会把大小挤到卡片备注的折叠线以下（需展开才可见）。
         sizes 元素为 (label, size, plat_tag)，plat_tag 是"-PC"/"-安卓"，无则为空串
         （用户 2026-09-23 要求区分同一游戏不同网盘对应的平台，如 PC+安卓 游戏）。
+        兼容新 API 字段（display_name/aliases/intros）与测试用旧字段（name/alias/intro_text）。
         """
         parts = []
         if sizes:
             parts.append("网盘大小：" + " ｜ ".join(
                 f"{label}{tag} {size}" for label, size, tag in sizes))
-        name = (galgame.get("name") or "").strip()
-        # 原名与别名合并成一行，不再单独列"其他名称"
+        name, name_original = self._display_name(galgame)
+        # 别名行：原名（多为日文）+ 其余别名；标题已占用的名字剔除
+        candidates = ([name_original] if name_original else []) + _alias_values(galgame)
         aliases = []
-        for candidate in [(galgame.get("name_original") or ""), *(galgame.get("alias") or [])]:
+        for candidate in candidates:
             c = (candidate or "").strip()
             if c and c != name and c not in aliases:
                 aliases.append(c)
         if aliases:
             parts.append("别名：" + " / ".join(aliases[:8]))
-        for label, note in notes:
-            if note:
-                parts.append(f"【{label} 发布者备注】\n{note}")
-        intro = _strip_html((galgame.get("intro_text") or "").strip())
-        intro = re.sub(r"\n{3,}", "\n\n", intro)
+        note_items = [(tag, note) for tag, note in notes if note]
+        if len(note_items) > 1 and all(tag for tag, _ in note_items):
+            # 凑出的 PC+安卓（两条资源各带备注）→ 合并成一个块（用户 2026-09-24：要简短）
+            parts.append("【发布者备注】\n" +
+                         "\n".join(f"{tag}：{note}" for tag, note in note_items))
+        else:
+            for _, note in note_items:
+                parts.append(f"【百度网盘 发布者备注】\n{note}")
+        intro = self._intro_text(galgame)
         if intro:
             parts.append("【简介】\n" + intro[:600])
         return "\n\n".join(parts)[:5000]
 
+    @staticmethod
+    def _intro_text(galgame):
+        """作品简介：新 API 是 intros[{locale,value}]，优先中文；兼容旧 intro_text 字段"""
+        intros = galgame.get("intros") or []
+        if intros and isinstance(intros[0], dict):
+            pick = None
+            for it in intros:
+                if it.get("locale") in ("zh-Hans", "zh-cn", "zh"):
+                    pick = it.get("value")
+                    break
+            if not pick:
+                pick = intros[0].get("value")
+            intro = _strip_html((pick or "").strip())
+            return re.sub(r"\n{3,}", "\n\n", intro)
+        intro = _strip_html((galgame.get("intro_text") or "").strip())
+        return re.sub(r"\n{3,}", "\n\n", intro)
+
     # ---------- 详情 ----------
+
+    @staticmethod
+    def _is_baidu_url(url):
+        u = (url or "").lower()
+        return "pan.baidu.com" in u or "yun.baidu.com" in u
 
     def parse_detail(self, url, category=""):
         gid = url.rstrip("/").split("/")[-1].split("?")[0]
 
-        galgame = self._api(f"/api/galgame/{gid}") or {}
-        resources = self._api(f"/api/galgame/{gid}/resource/all?galgame_id={gid}") or []
-        picked = self._pick_newest_valid(resources)
+        work = self._api(f"/api/v1/works/{gid}?include_nsfw=true") or {}
+        resources = self._fetch_all_resources(gid)
+        selected, plat_union = self._pick_newest_valid(resources)
 
-        name = (galgame.get("name") or "").strip()
-        if not picked:
-            # 百度/移动云盘的有效资源都没有 → 交给引擎按"跳过"处理
+        name, _ = self._display_name(work)
+        if not selected:
+            # 百度网盘的有效资源都没有 → 交给引擎按"跳过"处理
             return {
                 "source": self.site_name, "source_id": gid, "source_url": url,
                 "title": name, "platform": "unknown", "content": "",
                 "images": "[]", "original_images": "[]", "post_date": "",
             }
 
-        # 体积上限：任一网盘超过 10GB 就整个游戏跳过（用户 2026-09-23 要求）。
-        # 用列表接口自带的 size 预判，省掉详情接口请求。
+        # 体积上限：超过 10GB 就整个游戏跳过不入库（用户 2026-09-23 要求）
         oversize = []
-        for bucket, res in picked.items():
+        for res in selected:
             gb = _size_to_gb(res.get("size") or "")
             if gb is not None and gb > MAX_SIZE_GB:
-                oversize.append((("百度网盘" if bucket == "baidu" else "移动云盘"),
-                                 res.get("size")))
+                oversize.append(("百度网盘", res.get("size")))
         if oversize:
             desc = "、".join(f"{lb} {sz}" for lb, sz in oversize)
             return {
@@ -545,43 +674,64 @@ class KungalCrawler(BaseCrawler):
                 "skip_reason": f"超过 {MAX_SIZE_GB:g}GB 上限（{desc}）",
             }
 
-        # 逐个取真实下载链接（需登录）
-        details, notes, sizes = {}, [], []
+        # 逐个资源发下载请求拿真实链接（新 API：POST downloads 发放，匿名可用）
+        details = []   # [(资源, 下载详情), ...]，PC 在前安卓在后
+        notes, sizes = [], []
         audit = []
-        for bucket, res in picked.items():
-            detail = self._api(f"/api/galgame-resource/{res['id']}/detail"
-                               f"?galgame_resource_id={res['id']}") or {}
-            details[bucket] = detail
-            label = "百度网盘" if bucket == "baidu" else "移动云盘"
+        for res in selected:
+            dl = self._api(f"/api/v1/galgame-resources/{res['id']}/downloads",
+                           method="POST") or {}
+            # 只保留百度链接（用户 2026-09-24：移动云盘等其余网盘不要了）
+            links = [u for u in (dl.get("download_urls") or []) if self._is_baidu_url(u)]
+            detail = {
+                "link": links,
+                "code": (dl.get("extraction_code") or "").strip() or None,
+                "password": (dl.get("archive_password") or "").strip() or None,
+                "provider_names": res.get("provider_names"),
+            }
+            label = "百度网盘"
+            plats = self._platform_set(res)
+            # 备注行的平台前缀：纯 PC → "PC："，纯安卓 → "安卓："，双平台不标
+            note_tag = "PC" if plats == {"pc"} else ("安卓" if plats == {"android"} else None)
             note_audit = {"label": label}
-            note = self._optimize_note(detail.get("note") or "", detail.get("password") or "",
-                                       note_audit)
+            note = self._optimize_note(
+                _doc_to_text(res.get("content") or {}), detail["password"], note_audit)
             audit.append(note_audit)
-            notes.append((label, note))
-            size_text = (detail.get("size") or res.get("size") or "").strip()
+            notes.append((note_tag, note))
+            size_text = (res.get("size") or "").strip()
             if size_text:
-                # 该网盘支持的平台 → 标注为"-PC"/"-安卓"；两端都支持则不标
-                plats = self._platform_set(res)
+                # 该资源支持的平台 → 标注为"-PC"/"-安卓"；两端都支持则不标
                 tag = ""
                 if plats == {"pc"}:
                     tag = "-PC"
                 elif plats == {"android"}:
                     tag = "-安卓"
                 sizes.append((label, size_text, tag))
-        # 百度在前，移动在后
-        sizes.sort(key=lambda x: 0 if x[0] == "百度网盘" else 1)
+            details.append((res, detail))
+        # PC 资源排前，安卓在后
+        details.sort(key=lambda x: 0 if self._platform_set(x[0]) == {"pc"} else 1)
 
-        platform, platform_label = self._platform_info(picked.values())
+        platform, platform_label = self._platform_label(plat_union)
 
         # 标题：只留平台（各网盘体积写在备注里的"网盘大小"行，用户 2026-09-23 确认）
-        title = f"{name} 【{platform_label}】"
+        # 资源自带标签（如【PC/盖世/Winator】附全CG存档+特典）拼在标题后（用户 2026-09-24，同其他站风格）
+        res_titles = []
+        for res in selected:
+            t = (res.get("title") or "").strip()
+            if t and t not in res_titles:
+                res_titles.append(t)
+        title = f"{name} 【{platform_label}】" + "".join(f"【{t}】" for t in res_titles)
 
-        # 下载项 + 主字段：一条资源支持 PC 和安卓时，按两个平台各出一个按钮
+        # 下载项 + 主字段：一条链接只出一个按钮（用户 2026-09-24：
+        # 单条资源本身 PC+安卓 通吃时不再拆成两个同链接按钮，标签标"百度网盘(PC+安卓)"）
         items = []
-        for bucket, detail in details.items():
-            res = picked[bucket]
+        for res, detail in details:
             plats = sorted(self._platform_set(res)) or ["unknown"]
-            for link in (detail.get("link") or []):
+            if plats == ["android", "pc"]:
+                plat_key = "pc_android"
+            else:
+                plat_key = plats[0]
+            for link in detail.get("link") or []:
                 if not link:
                     continue
                 # 百度常把提取码写在链接的 pwd 参数里，code 字段为空时从中兜底
@@ -590,39 +740,55 @@ class KungalCrawler(BaseCrawler):
                     m = re.search(r"[?&]pwd=([A-Za-z0-9]{4,})", link)
                     if m:
                         code = m.group(1)
-                for plat in plats:
-                    items.append({
-                        "provider": bucket,
-                        "url": link,
-                        "code": code,
-                        "platform": plat,
-                        "label": (detail.get("provider_names") or [None])[0],
-                    })
+                items.append({
+                    "provider": "baidu",
+                    "url": link,
+                    "code": code,
+                    "platform": plat_key,
+                    "label": (detail.get("provider_names") or [None])[0],
+                })
 
-        def first(bucket, key):
-            d = details.get(bucket) or {}
-            if key == "url":
-                links = d.get("link") or []
-                return links[0] if links else None
-            if key == "code":
-                code = d.get("code") or None
-                if not code:
-                    links = d.get("link") or []
-                    if links:
-                        m = re.search(r"[?&]pwd=([A-Za-z0-9]{4,})", links[0])
-                        if m:
-                            code = m.group(1)
-                return code
-            return d.get(key) or None
+        # 同 URL 合并：不同资源贴了同一个百度链接时只留一个按钮，平台取并集
+        # （用户 2026-09-24：同一条链接不该按资源拆成"PC/安卓"两个按钮）
+        merged = {}
+        for it in items:
+            cur = merged.get(it["url"])
+            if cur is None:
+                merged[it["url"]] = dict(it)
+                continue
+            plats = {cur["platform"], it["platform"]} - {"unknown"}
+            if cur["platform"] == "pc_android" or it["platform"] == "pc_android" \
+                    or plats == {"pc", "android"}:
+                cur["platform"] = "pc_android"
+            elif len(plats) == 1:
+                cur["platform"] = plats.pop()
+        items = list(merged.values())
 
-        # 解压密码：按网盘区分标注（用户反馈"open / afggacg"看不出哪个属于哪个网盘）
+        # 主链接字段：取第一条百度链接（PC 排前）
+        baidu_link = baidu_code = None
+        for res, detail in details:
+            links = detail.get("link") or []
+            if links:
+                baidu_link = links[0]
+                baidu_code = detail.get("code") or None
+                if not baidu_code:
+                    m = re.search(r"[?&]pwd=([A-Za-z0-9]{4,})", baidu_link)
+                    if m:
+                        baidu_code = m.group(1)
+                break
+
+        # 解压密码：多条密码不同时按资源平台标注（"百度网盘-PC open ｜ 百度网盘-安卓 afggacg"）
         unzip_code = self._build_unzip_code(details)
 
         # 封面：只取 1 张主封面
         images = []
-        cover = (galgame.get("effective_banner_url") or "").strip()
+        cover_obj = work.get("cover") or work.get("banner") or {}
+        if isinstance(cover_obj, dict):
+            cover = (cover_obj.get("url") or "").strip()
+        else:
+            cover = ""
         if not cover:
-            covers = galgame.get("covers") or []
+            covers = work.get("covers") or []
             if covers and isinstance(covers[0], dict):
                 cover = covers[0].get("url") or ""
         if cover:
@@ -635,13 +801,13 @@ class KungalCrawler(BaseCrawler):
 
         # 发布日期：取所选资源里最新的一条（离现在最近）
         post_date = ""
-        created_values = [self._created_key(r) for r in picked.values() if self._created_key(r)]
+        created_values = [self._created_key(r) for r in selected if self._created_key(r)]
         if created_values:
             m = DATE_PATTERN.search(max(created_values))
             if m:
                 post_date = m.group(0)
         if not post_date:
-            m = DATE_PATTERN.search(str(galgame.get("resource_update_time") or ""))
+            m = DATE_PATTERN.search(str(work.get("resource_updated_at") or ""))
             if m:
                 post_date = m.group(0)
 
@@ -654,17 +820,17 @@ class KungalCrawler(BaseCrawler):
             "source_url": url,
             "title": title,
             "platform": platform,
-            "content": self._build_content(galgame, notes, sizes),
+            "content": self._build_content(work, notes, sizes),
             "download_items_json": json.dumps(items, ensure_ascii=False),
-            "likes": int(galgame.get("like_count") or 0),
+            "likes": int(work.get("like_count") or 0),
             "comments": 0,
-            "views": int(galgame.get("view") or 0),
+            "views": int(work.get("view_count") or 0),
             "unzip_code": unzip_code,
             "cheat_code": None,
-            "baidu_link": first("baidu", "url"),
-            "baidu_code": first("baidu", "code"),
-            "mobile_link": first("mobile", "url"),
-            "mobile_code": first("mobile", "code"),
+            "baidu_link": baidu_link,
+            "baidu_code": baidu_code,
+            "mobile_link": None,
+            "mobile_code": None,
             "images": json.dumps(images),
             "original_images": json.dumps(images),
             "post_date": post_date,

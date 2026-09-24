@@ -8,12 +8,6 @@ BAIDU_PATTERNS = [
     r'https?://yun\.baidu\.com/s/[A-Za-z0-9_-]+',
 ]
 
-MOBILE_PATTERNS = [
-    r'https?://yun\.139\.com/[^\s<"\']*',
-    r'https?://139\.com/[^\s<"\']*',
-    r'mobilecloud\.139\.cn[^\s<"\']*',
-]
-
 CODE_PATTERNS = [
     r'(?:提取码|提取密码|密码|pwd)[：:=\s]*([A-Za-z0-9]{4})',
     r'[?&]pwd=([A-Za-z0-9]{4})',
@@ -35,10 +29,11 @@ CHEAT_CODE_PATTERN = re.compile(
 )
 
 def extract_links(text):
-    """从文本中提取百度网盘和移动云盘链接（自动反转义HTML实体）。
+    """从文本中提取百度网盘链接（自动反转义HTML实体）。
 
-    保留旧接口语义：从全文中各取**一条**百度和一条移动云盘链接（取最先匹配到的）。
+    保留旧接口语义：从全文中取**一条**百度链接（取最先匹配到的）。
     新代码建议改用 :func:`extract_links_multi`，可以保留每个网盘下 PC/安卓双链接。
+    移动云盘已于 2026-09-24 下线，不再采集（mobile_* 字段保留但恒为 None）。
     """
     if not text:
         return {}
@@ -67,16 +62,6 @@ def extract_links(text):
             result["baidu_link"] = url
             break
 
-    # 提取移动云盘链接
-    for pattern in MOBILE_PATTERNS:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            url = match.group(0)
-            if not url.startswith("http"):
-                url = "https://" + url
-            result["mobile_link"] = url
-            break
-
     # 提取百度提取码
     if result["baidu_link"]:
         # 从链接本身提取
@@ -90,14 +75,6 @@ def extract_links(text):
                 if match:
                     result["baidu_code"] = match.group(1)
                     break
-
-    # 提取移动云盘提取码
-    if result["mobile_link"]:
-        for pattern in CODE_PATTERNS:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                result["mobile_code"] = match.group(1)
-                break
 
     return result
 
@@ -131,12 +108,6 @@ def _split_link_blocks(text):
     for pattern in BAIDU_PATTERNS:
         for m in re.finditer(pattern, text, re.IGNORECASE):
             blocks.append({"url": m.group(0), "start": m.start(), "end": m.end()})
-    for pattern in MOBILE_PATTERNS:
-        for m in re.finditer(pattern, text, re.IGNORECASE):
-            url = m.group(0)
-            if not url.startswith("http"):
-                url = "https://" + url
-            blocks.append({"url": url, "start": m.start(), "end": m.end()})
 
     if not blocks:
         return []
@@ -194,21 +165,16 @@ def _is_baidu(url):
     return ("pan.baidu.com" in u) or ("yun.baidu.com" in u)
 
 
-def _is_mobile(url):
-    if not url:
-        return False
-    u = url.lower()
-    return ("yun.139.com" in u) or ("139.com" in u) or ("mobilecloud" in u) or ("139.cn" in u)
-
-
 def extract_links_multi(text):
-    """提取帖子中**全部**百度/移动云盘下载项并标记每条链接对应的平台。
+    """提取帖子中**全部**百度云盘下载项并标记每条链接对应的平台。
+
+    移动云盘已于 2026-09-24 下线，不再采集（mobile_* 字段保留但恒为 None）。
 
     返回结构::
 
         {
             "items": [
-                {"provider": "baidu"|"mobile",
+                {"provider": "baidu",
                  "url": "...",
                  "code": "..." | None,
                  "platform": "pc"|"android"|"unknown",
@@ -238,21 +204,17 @@ def extract_links_multi(text):
             if surl_match:
                 url = f"https://pan.baidu.com/s/{surl_match.group(1)}"
 
-        if _is_baidu(url):
-            provider = "baidu"
-        elif _is_mobile(url):
-            provider = "mobile"
-        else:
+        if not _is_baidu(url):
             continue
 
-        key = (provider, url)
+        key = ("baidu", url)
         if key in seen:
             continue
         seen.add(key)
 
         platform = _classify_platform_by_label(b.get("label"))
         items.append({
-            "provider": provider,
+            "provider": "baidu",
             "url": url,
             "code": b.get("code"),
             "platform": platform,
@@ -281,7 +243,6 @@ def _aggregate_multi(items):
 
     buckets = {
         "baidu": {"pc": [], "android": [], "unknown": []},
-        "mobile": {"pc": [], "android": [], "unknown": []},
     }
     for it in items:
         bucket = buckets.get(it["provider"])
@@ -290,19 +251,13 @@ def _aggregate_multi(items):
         bucket[it["platform"]].append(it)
 
     first_baidu = next((i for i in items if i["provider"] == "baidu"), None)
-    first_mobile = next((i for i in items if i["provider"] == "mobile"), None)
     if first_baidu:
         result["baidu_link"] = first_baidu["url"]
         result["baidu_code"] = first_baidu["code"]
-    if first_mobile:
-        result["mobile_link"] = first_mobile["url"]
-        result["mobile_code"] = first_mobile["code"]
 
     for provider, key, code_key in [
         ("baidu", "baidu_pc", "baidu_pc_code"),
         ("baidu", "baidu_android", "baidu_android_code"),
-        ("mobile", "mobile_pc", "mobile_pc_code"),
-        ("mobile", "mobile_android", "mobile_android_code"),
     ]:
         plat = "pc" if key.endswith("_pc") else "android"
         candidates = buckets[provider][plat] or buckets[provider]["unknown"]
@@ -315,9 +270,9 @@ def _aggregate_multi(items):
 
 
 def has_valid_link(text):
-    """检查文本是否包含有效的百度或移动云盘链接"""
+    """检查文本是否包含有效的百度网盘链接（移动云盘已下线）"""
     res = extract_links(text)
-    return bool(res.get("baidu_link") or res.get("mobile_link"))
+    return bool(res.get("baidu_link"))
 
 
 def extract_cloud_name(text):

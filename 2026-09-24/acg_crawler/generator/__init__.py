@@ -538,38 +538,52 @@ def generate_html(posts, title, filename):
                 items = []
 
         def _label_for(plat):
-            return "PC" if plat == "pc" else ("安卓" if plat == "android" else "")
+            if plat == "pc":
+                return "PC"
+            if plat == "android":
+                return "安卓"
+            if plat == "pc_android":
+                return "PC+安卓"
+            return ""
 
         def _code_suffix(code):
             return f" ({code})" if code else ""
 
         if items:
-            # 按平台归类，单个网盘最多输出 2 个按钮
-            for provider, label_zh in (("baidu", "百度网盘"), ("mobile", "移动云盘")):
+            # 按平台归类，单个网盘最多输出 2 个按钮（移动云盘 2026-09-24 起下线，只渲染百度）
+            # 同 URL 只出一个按钮（用户 2026-09-24：一条链接不该拆成 PC/安卓 两个按钮），平台取并集
+            for provider, label_zh in (("baidu", "百度网盘"),):
                 plats = [it for it in items if it.get("provider") == provider]
                 if not plats:
                     continue
-                seen_plats = set()
+                seen_urls = set()
                 for it in plats:
-                    plat = it.get("platform") or "unknown"
-                    if plat in seen_plats:
+                    url = it.get("url", "#")
+                    if url in seen_urls:
                         continue
-                    seen_plats.add(plat)
+                    seen_urls.add(url)
+                    plat_set = {o.get("platform") or "unknown"
+                                for o in plats if o.get("url", "#") == url}
+                    if "pc_android" in plat_set or {"pc", "android"} <= plat_set:
+                        plat = "pc_android"
+                    elif "pc" in plat_set:
+                        plat = "pc"
+                    elif "android" in plat_set:
+                        plat = "android"
+                    else:
+                        plat = "unknown"
                     suffix = _label_for(plat)
                     cls = "link-baidu" if provider == "baidu" else "link-mobile"
-                    text = f"{label_zh}{suffix}" if suffix else label_zh
+                    text = f"{label_zh}({suffix})" if suffix else label_zh
                     links.append(
                         f'<a href="{it.get("url", "#")}" class="link-btn {cls}" target="_blank">'
                         f'{text}{_code_suffix(it.get("code"))}</a>'
                     )
         else:
-            # 兼容老数据：按 baidu_link / mobile_link 单条渲染
+            # 兼容老数据：按 baidu_link 单条渲染（移动云盘已下线，不渲染 mobile_link）
             if post.get("baidu_link"):
                 code = post.get("baidu_code", "")
                 links.append(f'<a href="{post["baidu_link"]}" class="link-btn link-baidu" target="_blank">百度网盘{(" ("+code+")") if code else ""}</a>')
-            if post.get("mobile_link"):
-                code = post.get("mobile_code", "")
-                links.append(f'<a href="{post["mobile_link"]}" class="link-btn link-mobile" target="_blank">移动云盘{(" ("+code+")") if code else ""}</a>')
         links.append(f'<a href="{post.get("source_url", "#")}" class="link-btn link-source" target="_blank">原帖</a>')
         links_html = "\n".join(links)
 
@@ -577,8 +591,9 @@ def generate_html(posts, title, filename):
         footer = ""
         parts = []
         if post.get("unzip_code"):
+            # 解压码文本由爬虫端生成完整格式（如"PC解压码:xxx"），这里不再加前缀
             _uc = html_lib.escape(str(post["unzip_code"]), quote=True)
-            parts.append(f'<button class="copy-text" data-copy="解压码：{_uc}" title="解压码：{_uc}" onclick="copyText(this)">解压码</button>')
+            parts.append(f'<button class="copy-text" data-copy="{_uc}" title="{_uc}" onclick="copyText(this)">解压码</button>')
         if post.get("cheat_code"):
             _cc = html_lib.escape(str(post["cheat_code"]), quote=True)
             parts.append(f'<button class="copy-text" data-copy="作弊码：{_cc}" title="作弊码：{_cc}" onclick="copyText(this)">作弊码</button>')
@@ -592,8 +607,8 @@ def generate_html(posts, title, filename):
         note_text = (post.get("content") or "").strip()
         if note_text and post.get("source") == "鲲Galgame":
             shown = note_text[:2000] + "……" if len(note_text) > 2000 else note_text
-            # 复制内容 = 完整备注（含"网盘大小"行，用户 2026-09-23 起要求带上）
-            copy_text = note_text.strip()
+            # 复制内容 = 完整备注但去掉开头"网盘大小"行（用户 2026-09-24：界面保留显示，复制不含）
+            copy_text = re.sub(r"^网盘大小：[^\n]*\n+", "", note_text).strip()
             note_id = f"note-{post.get('id', 'x')}"
             note_html = (
                 '<div class="card-note">'
@@ -610,7 +625,7 @@ def generate_html(posts, title, filename):
 
         card = CARD_TEMPLATE.format(
             images_html=imgs_html,
-            title=post.get("title", ""),
+            title=html_lib.escape(post.get("title", ""), quote=False),
             platform_tag=platform_tag,
             source=post.get("source", ""),
             date=post.get("post_date", ""),

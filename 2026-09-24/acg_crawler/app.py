@@ -31,11 +31,21 @@ def _maybe_auto_backup():
         existing = sorted(backups_dir.glob("crawler-*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
         if existing and (existing[0].stat().st_mtime > time.time() - 7 * 86400):
             return  # 7 天内已备份过，跳过
-        # 执行备份
-        import shutil as _sh
+        # 执行备份：用 SQLite backup API 拿一致性快照（直接 shutil 拷贝运行中的
+        # WAL 库会漏掉 -wal 里未合并的写入，备份可能缺最近的数据）
+        import sqlite3 as _sq
         ts = time.strftime("%Y%m%d-%H%M%S")
         dest = backups_dir / f"crawler-{ts}.db"
-        _sh.copy2(str(DB_PATH), str(dest))
+        src = _sq.connect(str(DB_PATH))
+        try:
+            dst = _sq.connect(str(dest))
+            try:
+                with dst:
+                    src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
         # 清理多余备份（保留最近 10 个）
         all_backups = sorted(backups_dir.glob("crawler-*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
         for old_bak in all_backups[10:]:

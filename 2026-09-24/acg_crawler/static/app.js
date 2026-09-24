@@ -64,7 +64,8 @@ document.addEventListener("DOMContentLoaded", function() {
         acgrx: "萌幻ACG",
         acgll: "ACG图书馆",
         acgjlb: "ACG俱乐部",
-        kungal: "鲲Galgame"
+        kungal: "鲲Galgame",
+        "2gou": "二狗ACG"
     };
     const STATUS_LABELS = {
         waiting: "等待中",
@@ -541,14 +542,11 @@ document.addEventListener("DOMContentLoaded", function() {
 
         var platformTags = {
             pc: '<span class="tag tag-pc">PC</span>',
-            android: '<span class="tag tag-pc">PC</span><span class="tag tag-android">安卓</span>',
+            android: '<span class="tag tag-android">安卓</span>',
             pc_android: '<span class="tag tag-pc">PC</span><span class="tag tag-android">安卓</span>',
             unknown: '<span class="tag tag-pc">未知</span>'
         };
         var platformTag = platformTags[post.platform] || platformTags.unknown;
-
-        var hasDual = post.baidu_link && post.mobile_link;
-        var dualTag = hasDual ? '<span class="tag tag-dual">双网盘</span>' : '';
 
         var linksHtml = "";
         // 多链接渲染：优先 download_items_json（按平台分别按钮）
@@ -556,30 +554,32 @@ document.addEventListener("DOMContentLoaded", function() {
         if (post.download_items_json) {
             try { items = JSON.parse(post.download_items_json) || []; } catch(e) { items = []; }
         }
-        function labelFor(p) { return p === "pc" ? "PC" : (p === "android" ? "安卓" : ""); }
+        function labelFor(p) { return p === "pc" ? "PC" : (p === "android" ? "安卓" : (p === "pc_android" ? "PC+安卓" : "")); }
         function codeSuffix(c) { return c ? " (" + c + ")" : ""; }
         if (items && items.length) {
-            ["baidu", "mobile"].forEach(function(provider) {
+            // 移动云盘 2026-09-24 起下线，只渲染百度网盘
+            // 同 URL 只出一个按钮（用户 2026-09-24：一条链接不该拆成 PC/安卓 两个按钮），平台取并集
+            ["baidu"].forEach(function(provider) {
                 var plats = items.filter(function(it){ return it.provider === provider; });
                 if (!plats.length) return;
-                var seen = {};
+                var seenUrl = {};
                 plats.forEach(function(it) {
-                    var p = it.platform || "unknown";
-                    if (seen[p]) return;
-                    seen[p] = true;
+                    var u = it.url;
+                    if (seenUrl[u]) return;
+                    seenUrl[u] = true;
+                    var set = {};
+                    plats.forEach(function(o){ if (o.url === u) set[o.platform || "unknown"] = true; });
+                    var p = set.pc_android || (set.pc && set.android ? "pc_android" : (set.pc ? "pc" : (set.android ? "android" : "unknown")));
                     var suffix = labelFor(p);
-                    var cls = provider === "baidu" ? "link-baidu" : "link-mobile";
-                    var text = (provider === "baidu" ? "百度网盘" : "移动云盘") + (suffix ? suffix : "");
-                    linksHtml += '<a href="' + it.url + '" class="link-btn ' + cls + '" target="_blank">' + text + codeSuffix(it.code) + '</a>';
+                    var cls = "link-baidu";
+                    var text = "百度网盘" + (suffix ? "(" + suffix + ")" : "");
+                    linksHtml += '<a href="' + u + '" class="link-btn ' + cls + '" target="_blank">' + text + codeSuffix(it.code) + '</a>';
                 });
             });
         } else {
             // 兼容老数据
             if (post.baidu_link) {
                 linksHtml += '<a href="' + post.baidu_link + '" class="link-btn link-baidu" target="_blank">百度网盘' + (post.baidu_code ? ' ('+post.baidu_code+')' : '') + '</a>';
-            }
-            if (post.mobile_link) {
-                linksHtml += '<a href="' + post.mobile_link + '" class="link-btn link-mobile" target="_blank">移动云盘' + (post.mobile_code ? ' ('+post.mobile_code+')' : '') + '</a>';
             }
         }
         linksHtml += '<a href="' + post.source_url + '" class="link-btn link-source" target="_blank">原帖</a>';
@@ -588,7 +588,8 @@ document.addEventListener("DOMContentLoaded", function() {
         if (post.unzip_code || post.cheat_code) {
             footerHtml = '<div class="card-footer"><div class="footer-left">';
             if (post.unzip_code) {
-                footerHtml += '<button class="btn btn-sm btn-unzip" data-copy="解压码：' + escapeHtml(post.unzip_code) + '" title="解压码：' + escapeHtml(post.unzip_code) + '" onclick="copyText(this)">解压码</button>';
+                // 解压码文本由爬虫端生成完整格式（如"PC解压码:xxx"），前端不再加前缀
+                footerHtml += '<button class="btn btn-sm btn-unzip" data-copy="' + escapeHtml(post.unzip_code) + '" title="' + escapeHtml(post.unzip_code) + '" onclick="copyText(this)">解压码</button>';
             }
             if (post.cheat_code) {
                 footerHtml += '<button class="btn btn-sm btn-unzip" data-copy="作弊码：' + escapeHtml(post.cheat_code) + '" title="作弊码：' + escapeHtml(post.cheat_code) + '" onclick="copyText(this)">作弊码</button>';
@@ -601,11 +602,13 @@ document.addEventListener("DOMContentLoaded", function() {
         var noteHtml = "";
         var noteText = (post.content || "").trim();
         if (noteText && post.source === "鲲Galgame") {
+            // 复制时去掉开头的"网盘大小"行（用户 2026-09-24：界面保留显示，复制不含）
+            var copyText2 = noteText.replace(/^网盘大小：[^\n]*\n+/, "");
             var noteShown = noteText.length > 2000 ? noteText.slice(0, 2000) + "……" : noteText;
             var noteId = "note-" + post.id;
             noteHtml = '<div class="card-note">' +
                 '<div class="note-head"><span>备注</span><span class="note-copy-hint">点击复制</span></div>' +
-                '<div class="note-body" id="' + noteId + '" data-copy="' + escapeHtml(noteText) + '"' +
+                '<div class="note-body" id="' + noteId + '" data-copy="' + escapeHtml(copyText2) + '"' +
                 ' title="点击复制备注" onclick="copyNote(this)">' + escapeHtml(noteShown) + '</div>' +
                 '<button class="note-toggle" type="button" aria-expanded="false" aria-controls="' + noteId + '" aria-label="展开备注" onclick="toggleNote(this)">' +
                 '<span class="note-toggle-text">展开</span>' +
@@ -614,11 +617,11 @@ document.addEventListener("DOMContentLoaded", function() {
                 '</div>';
         }
 
-        var displayTitle = post.title.replace(/【([^】]*)\/([^】]*)】/g, '【$1 $2】');
+        var displayTitle = escapeHtml(post.title).replace(/【([^】]*)\/([^】]*)】/g, '【$1 $2】');
 
         var statsHtml = '<div class="card-stats"><span class="stat-item"><span class="stat-key">LIKE</span>' + (post.likes || 0) + '</span></div>';
 
-        card.innerHTML = '<div class="card-header"><div class="card-select"><input type="checkbox" data-id="' + post.id + '" onchange="toggleSelect(this)"></div><div class="card-tags">' + platformTag + dualTag + '<span class="tag tag-source">' + post.source + '</span></div><span class="tag tag-date">' + (post.post_date || '') + '</span></div><div class="card-images">' + imgsHtml + '</div><div class="card-body"><div class="card-title" onclick="copyTitle(this)" title="点击复制标题">' + displayTitle + '</div>' + statsHtml + '<div class="card-links">' + linksHtml + '</div>' + noteHtml + '</div>' + footerHtml + '<div class="card-actions"><button class="btn btn-sm" onclick="downloadPost(' + post.id + ', this)" title="只导出这一条帖子">下载</button><button class="btn btn-sm btn-danger" onclick="deletePost(' + post.id + ')">删除</button></div>';
+        card.innerHTML = '<div class="card-header"><div class="card-select"><input type="checkbox" data-id="' + post.id + '" onchange="toggleSelect(this)"></div><div class="card-tags">' + platformTag + '<span class="tag tag-source">' + post.source + '</span></div><span class="tag tag-date">' + (post.post_date || '') + '</span></div><div class="card-images">' + imgsHtml + '</div><div class="card-body"><div class="card-title" onclick="copyTitle(this)" title="点击复制标题">' + displayTitle + '</div>' + statsHtml + '<div class="card-links">' + linksHtml + '</div>' + noteHtml + '</div>' + footerHtml + '<div class="card-actions"><button class="btn btn-sm" onclick="downloadPost(' + post.id + ', this)" title="只导出这一条帖子">下载</button><button class="btn btn-sm btn-danger" onclick="deletePost(' + post.id + ')">删除</button></div>';
         // 入 DOM 后再量高度，决定要不要显示展开按钮
         window.requestAnimationFrame(function() { setupNote(card); });
         return card;
