@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACG黄油资源聚合爬取工具</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1>ACG黄油资源聚合爬取工具</h1>
+            <div class="header-actions">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">就绪</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <nav class="sidebar">
+            <button class="nav-btn active" data-panel="crawl">爬取控制</button>
+            <button class="nav-btn" data-panel="result">爬取结果</button>
+            <button class="nav-btn" data-panel="history">历史记录</button>
+            <button class="nav-btn" data-panel="export">导出文件</button>
+        </nav>
+
+        <section class="content">
+            <!-- 爬取控制面板 -->
+            <div class="panel active" id="panel-crawl">
+                <div class="panel-header">
+                    <h2>爬取控制</h2>
+                </div>
+
+                <div class="form-group">
+                    <label>目标站点</label>
+                    <div class="checkbox-group">
+                        <label class="checkbox-label"><input type="checkbox" value="acgyxj" checked> ACG游戏姬</label>
+                        <label class="checkbox-label"><input type="checkbox" value="acgrx" checked> 萌幻ACG</label>
+                        <label class="checkbox-label"><input type="checkbox" value="acgll" checked> ACG图书馆</label>
+                        <label class="checkbox-label"><input type="checkbox" value="acgjlb" checked> ACG俱乐部</label>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>爬取模式</label>
+                    <div class="radio-group">
+                        <label class="radio-label"><input type="radio" name="crawlMode" value="by_page" checked> 按页码爬取</label>
+                        <label class="radio-label"><input type="radio" name="crawlMode" value="by_date"> 按日期爬取</label>
+                        <label class="radio-label"><input type="radio" name="crawlMode" value="incremental"> 增量爬取</label>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>速度档位</label>
+                    <div class="radio-group speed-group">
+                        <label class="radio-label"><input type="radio" name="speedMode" value="stable"> 稳定</label>
+                        <label class="radio-label"><input type="radio" name="speedMode" value="balanced" checked> 平衡</label>
+                        <label class="radio-label"><input type="radio" name="speedMode" value="fast"> 快速</label>
+                    </div>
+                </div>
+
+                <div class="form-group" id="pageGroup">
+                    <label>页码范围</label>
+                    <div class="page-inputs">
+                        <select id="pageSite">
+                            <option value="all">全部站点</option>
+                            <option value="acgyxj">ACG游戏姬</option>
+                            <option value="acgrx">萌幻ACG</option>
+                            <option value="acgll">ACG图书馆</option>
+                            <option value="acgjlb">ACG俱乐部</option>
+                        </select>
+                        <input type="number" id="startPage" value="1" min="1" placeholder="起始页">
+                        <span>至</span>
+                        <input type="number" id="endPage" value="10" min="1" placeholder="结束页">
+                    </div>
+                </div>
+
+                <div class="form-group hidden" id="dateGroup">
+                    <label>日期范围</label>
+                    <div class="date-inputs">
+                        <input type="date" id="startDate" value="2026-09-01">
+                        <span>至</span>
+                        <input type="date" id="endDate" value="2026-09-06">
+                    </div>
+                </div>
+
+                <div class="form-group hidden" id="incrementalGroup">
+                    <p class="help-text">增量模式：自动从上次爬取的位置继续，爬到已有数据时自动停止</p>
+                </div>
+
+                <div class="form-actions">
+                    <button class="btn btn-primary" id="startBtn">开始爬取</button>
+                    <button class="btn btn-danger hidden" id="stopBtn">停止爬取</button>
+                    <button class="btn btn-sm" id="redownloadBtn" onclick="redownloadImages()">重新下载图片</button>
+                </div>
+
+                <div class="progress-section hidden" id="progressSection">
+                    <div class="progress-header">
+                        <span>总体进度</span>
+                        <span id="progressText">0 / 0</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+                    </div>
+                    <div class="stats-row">
+                        <span class="stat success">成功: <strong id="statSuccess">0</strong></span>
+                        <span class="stat skipped">跳过: <strong id="statSkipped">0</strong></span>
+                        <span class="stat error">失败: <strong id="statError">0</strong></span>
+                    </div>
+                    <div class="site-panels" id="sitePanels">
+                        <!-- 站点独立窗口由JS动态生成 -->
+                    </div>
+                    <div class="log-box" id="logBox">
+                        <div class="log-line">【系统】等待开始...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 爬取结果面板 -->
+            <div class="panel" id="panel-result">
+                <div class="panel-header">
+                    <h2>爬取结果</h2>
+                    <div class="result-filters">
+                        <select id="filterSource">
+                            <option value="all">全部来源</option>
+                            <option value="ACG游戏姬">ACG游戏姬</option>
+                            <option value="萌幻ACG">萌幻ACG</option>
+                            <option value="ACG图书馆">ACG图书馆</option>
+                            <option value="ACG俱乐部">ACG俱乐部</option>
+                        </select>
+                        <div class="platform-tabs" id="platformTabs">
+                            <button class="plat-tab active" data-plat="all" onclick="switchPlatTab(this)">全部</button>
+                            <button class="plat-tab" data-plat="pc" onclick="switchPlatTab(this)">PC</button>
+                            <button class="plat-tab" data-plat="pc_android" onclick="switchPlatTab(this)">PC+安卓</button>
+                        </div>
+                        <span class="result-count">共 <strong id="resultCount">0</strong> 条</span>
+                    </div>
+                </div>
+                <div class="batch-bar" id="batchBar">
+                    <label class="checkbox-label"><input type="checkbox" id="selectAll"> 全选</label>
+                    <span class="selected-count">已选 <strong id="selectedCount">0</strong> 条</span>
+                    <button class="btn btn-sm btn-danger" id="batchDeleteBtn">批量删除</button>
+                    <button class="btn btn-sm" id="batchExportBtn">导出选中</button>
+                </div>
+                <div class="sticky-date-bar" id="stickyDateBar">
+                    <span class="sticky-label">爬取时间</span>
+                    <div class="sticky-btns" id="stickyBtns"></div>
+                </div>
+                <div id="groupedResults"></div>
+            </div>
+
+            <!-- 历史记录面板 -->
+            <div class="panel" id="panel-history">
+                <div class="panel-header">
+                    <h2>历史记录</h2>
+                </div>
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>类型</th>
+                            <th>站点</th>
+                            <th>状态</th>
+                            <th>成功</th>
+                            <th>跳过</th>
+                            <th>失败</th>
+                            <th>时间</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="historyBody"></tbody>
+                </table>
+            </div>
+
+            <!-- 导出文件面板 -->
+            <div class="panel" id="panel-export">
+                <div class="panel-header">
+                    <h2>导出文件</h2>
+                </div>
+                <div class="export-stats">
+                    <p>当前数据库共有 <strong id="exportTotal">0</strong> 条记录</p>
+                </div>
+                
+                <!-- 按批次导出 -->
+                <div class="export-section">
+                    <h3>按爬取批次导出</h3>
+                    <div id="batchList" class="batch-list">
+                        <p class="loading-text">加载中...</p>
+                    </div>
+                </div>
+                
+                <!-- 全量导出 -->
+                <div class="export-section">
+                    <h3>全量导出</h3>
+                    <div class="export-cards">
+                        <div class="export-card">
+                            <div class="export-icon">PC</div>
+                            <h3>PC下载.zip</h3>
+                            <p>仅包含PC平台的游戏资源（含图片）</p>
+                            <div class="export-count"><strong id="countPc">0</strong> 条</div>
+                            <button class="btn btn-primary" onclick="doExport('pc')">下载 PC下载.zip</button>
+                        </div>
+                        <div class="export-card">
+                            <div class="export-icon">PC+安卓</div>
+                            <h3>PC+安卓下载.zip</h3>
+                            <p>包含PC和安卓双平台的游戏资源（含图片）</p>
+                            <div class="export-count"><strong id="countMixed">0</strong> 条</div>
+                            <button class="btn btn-primary" onclick="doExport('mixed')">下载 PC+安卓下载.zip</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

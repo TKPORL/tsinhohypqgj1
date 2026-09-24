@@ -1,0 +1,102 @@
+# ACG资源聚合爬取工具 - 配置文件
+
+# 代理设置
+proxy:
+  enabled: true
+  http: "http://127.0.0.1:7890"
+  https: "http://127.0.0.1:7890"
+
+# 爬虫设置
+crawler:
+  site_workers: 12          # 站点并发线程数
+  max_workers: 12
+  request_delay_min: 0.2   # 最小请求间隔(秒)
+  request_delay_max: 0.5   # 最大请求间隔(秒)
+  timeout: 10              # 请求超时(秒)
+  max_retries: 3
+  retry_delay: 2
+
+# 速度档位（前端选择，后端校验）
+speed:
+  default: "balanced"
+  profiles:
+    stable:                # 稳定模式
+      detail_workers: 1    # 站内详情并发
+      delay_min: 0.5
+      delay_max: 1.0
+      image_workers: 2     # 全局图片并发
+    balanced:              # 平衡模式（默认）
+      detail_workers: 2    # 站内详情并发（acgyxj为3）
+      delay_min: 0.2
+      delay_max: 0.5
+      image_workers: 6
+    fast:                  # 快速模式
+      detail_workers: 4
+      delay_min: 0.1
+      delay_max: 0.3
+      image_workers: 10
+  site_detail_workers:     # 各站详情并发覆盖
+    acgyxj: 3
+    acgrx: 2
+    acgll: 2
+    acgjlb: 2
+
+# 萌幻ACG登录（凭据已迁移到.env本地文件，不入git）
+acgrx:
+  email: ""    # 留空则读取环境变量 ACGRX_EMAIL 或 .env 文件
+  password: "" # 留空则读取环境变量 ACGRX_PASSWORD 或 .env 文件
+
+# 图片设置
+images:
+  download: true
+  max_size_mb: 10
+  timeout: 30
+
+# 网盘过滤
+filter:
+  allow_baidu: true
+  allow_mobile: true
+  allow_quark: false
+  allow_uc: false
+  allow_xunlei: false
+
+# 排序
+sort:
+  by: "likes_comments"
+  order: "desc"
+
+# Flask
+flask:
+  host: "127.0.0.1"
+  port: 5000
+  debug: false
+
+# 站点配置
+sites:
+  acgyxj:
+    name: "ACG游戏姬"
+    base_url: "https://www.acgyxjvip.com"
+    list_path: "/page/{page}"
+    detail_path: "/{id}.html"
+    enabled: true
+
+  acgrx:
+    name: "萌幻ACG"
+    base_url: "https://bbs4.acgrx.com"
+    list_path: "/page/{page}"
+    detail_path: "/game/{id}.html"
+    enabled: true
+
+  acgll:
+    name: "ACG图书馆"
+    base_url: "https://acgll.xyz"
+    list_path: "/category/youxi/page/{page}"
+    detail_path: "/{slug}"
+    enabled: true
+
+  acgjlb:
+    name: "ACG俱乐部"
+    base_url: "https://www.acgjlb.cc"
+    list_path: "/acggame?page={page}"
+    detail_path: "/{id}"
+    enabled: true

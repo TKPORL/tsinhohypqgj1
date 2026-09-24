@@ -1,0 +1,29 @@
+# Python缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 运行数据（不入版本库）
+acg_crawler/data/*.db
+acg_crawler/data/*.db-wal
+acg_crawler/data/*.db-shm
+acg_crawler/images/
+acg_crawler/output/
+
+# 敏感配置
+acg_crawler/.env
+*.env
+
+# 日志与临时文件
+*.log
+终端完整内容.txt
+.workbuddy/
+
+# 本地解压导出目录
+PC下载 (1)/
+PC+安卓下载 (1)/
+
+# 系统文件
+.DS_Store
+Thumbs.db
