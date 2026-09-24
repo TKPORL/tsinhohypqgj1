@@ -11,6 +11,8 @@ WordPress 站（TouchGal 风格主题），四站 HTML 方案（不套鲲的 API
 """
 import json
 import re
+import random
+import time
 from bs4 import BeautifulSoup
 from crawler.base import BaseCrawler
 from parser import extract_links_multi, extract_cheat_code
@@ -132,6 +134,23 @@ class ErGouACGCrawler(BaseCrawler):
         self.session.headers["User-Agent"] = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                                               "AppleWebKit/537.36 (KHTML, like Gecko) "
                                               "Chrome/126.0.0.0 Safari/537.36")
+
+    # ---------- 限流保护（2026-09-25 实测第1页即 429 Too Many Requests）----------
+
+    def _delay(self):
+        # 二狗限流比四站严，站内请求间隔放大到 3~6 秒（基类默认 0.5~1.5 秒）
+        time.sleep(random.uniform(3, 6))
+
+    def _request(self, url, retries=3):
+        # 命中 429 时整请求退避重试：等 20s / 40s 再来
+        for attempt in range(retries):
+            try:
+                return super()._request(url, retries=1)
+            except Exception as e:
+                if "429" in str(e) and attempt < retries - 1:
+                    time.sleep(20 * (attempt + 1))
+                    continue
+                raise
 
     # ---------- 列表 ----------
 
