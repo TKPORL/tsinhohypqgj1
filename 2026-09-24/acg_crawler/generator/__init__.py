@@ -1,6 +1,7 @@
 """HTML生成器"""
 import html as html_lib
 import json
+import re
 import shutil
 import zipfile
 from datetime import datetime
